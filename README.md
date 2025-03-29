@@ -1,4 +1,4 @@
-#dqnTrader - Coinbase USDC Trading Bot
+# dqnTrader - Coinbase USDC Trading Bot
 
 ## Overview
 dqn-trader is a deep reinforcement learning trading bot for USDC crypto pairs on Coinbase. It leverages a Double DQN with batch normalization and Prioritized Experience Replay (PER) for short-interval grid profit targeting.
