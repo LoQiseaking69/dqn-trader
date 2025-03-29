@@ -65,14 +65,11 @@ These dependencies are defined in the `Cargo.toml` file.
 ## Project Structure
 
 ```
-dqn-trader/
+your_project/
 ├── src/
-│   ├── main.rs               # Main program logic
-│   ├── replay_buffer.rs      # Defines the experience replay buffer and prioritized sampling
-│   ├── dqn.rs                # Defines the DQN model (neural network)
-│   └── utils.rs              # Utility functions for data handling, including caching and preprocessing
-├── Cargo.toml                # Cargo configuration and dependencies
-└── README.md                 # Project documentation
+│   └── coinbase_rustRNN.rs    # Your single complete script
+├── Cargo.toml               # Cargo configuration and dependencies
+└── README.md                # Project documentation              # Project documentation
 ```
 
 ## Usage
