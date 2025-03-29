@@ -34,7 +34,7 @@ def start_process():
                 if shutdown_event.is_set():
                     logger.info("Shutdown signal detected. Terminating training loop.")
                     break
-                
+
                 # Start training process
                 train_loop()  # Training process
                 time.sleep(1)  # Small delay to prevent CPU hogging
@@ -50,6 +50,22 @@ def start_process():
         raise
     finally:
         logger.info("Main process clean-up done.")
+
+# Modified version of the data-fetching thread with shutdown handling
+def start_data_fetching_thread():
+    """Fetch data and handle the shutdown signal properly."""
+    while not shutdown_event.is_set():
+        try:
+            # Replace this with actual data fetching logic
+            data = fetch_coinbase_data()  # Example: You should implement this function
+            if data:
+                cache_data(data)  # Example: Implement caching logic as needed
+            time.sleep(60)  # Wait 60 seconds before fetching data again
+        except Exception as e:
+            logger.error(f"Error in data fetching thread: {e}")
+            break
+
+    logger.info("Data fetching thread terminated.")
 
 # Main Execution
 if __name__ == "__main__":
