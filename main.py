@@ -30,18 +30,21 @@ def start_process():
         # Start the training loop in the main thread
         logger.info("Starting the training loop.")
         while not shutdown_event.is_set():
-            # Ensure that the training loop can be stopped gracefully
-            if shutdown_event.is_set():
-                logger.info("Shutdown signal detected. Terminating training loop.")
-                break
             try:
+                if shutdown_event.is_set():
+                    logger.info("Shutdown signal detected. Terminating training loop.")
+                    break
+                
+                # Start training process
                 train_loop()  # Training process
                 time.sleep(1)  # Small delay to prevent CPU hogging
+
             except Exception as e:
                 logger.error(f"An error occurred during training: {e}")
                 break
 
         logger.info("Training loop terminated.")
+        
     except Exception as e:
         logger.error(f"Unexpected error in start_process: {e}")
         raise
