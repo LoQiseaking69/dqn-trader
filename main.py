@@ -1,52 +1,50 @@
 import threading
 import time
 import logging
-import os
+import signal
 import sys
+from coinbase_rustRNN import train_loop, start_data_fetching_thread
 
-# Add the 'src' folder to the Python path
-src_path = os.path.join(os.path.dirname(__file__), 'src')
-sys.path.insert(0, src_path)
-
-# Now import coinbase_rustRNN from src
-import coinbase_rustRNN
-
-# Set up logging
+# Initialize logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# Start Data Fetching
-def data_fetching_thread():
-    """Run this function in a separate thread to fetch data periodically."""
-    while True:
-        try:
-            # Call the function to fetch and cache data from coinbase_rustRNN.py
-            coinbase_rustRNN.fetch_and_cache_data()  # Assuming this function exists in coinbase_rustRNN.py
-        except Exception as e:
-            logger.error(f"Error in data fetching thread: {e}")
-        time.sleep(60)  # Fetch data every minute
+# Flag to control process shutdown
+shutdown_flag = False
 
-# Main execution of the training loop (coinbase_rustRNN.py)
-def main_training_loop():
-    """Run the training loop for coinbase_rustRNN."""
-    try:
-        # Assuming there's a function to start the training loop in coinbase_rustRNN.py
-        coinbase_rustRNN.train_loop()  # Adjust this to the function name in coinbase_rustRNN.py
-    except Exception as e:
-        logger.error(f"Error in main training loop: {e}")
+# Function to handle graceful shutdown
+def handle_shutdown_signal(signal, frame):
+    """Handle termination signals for graceful shutdown."""
+    global shutdown_flag
+    logger.info("Shutdown signal received. Cleaning up...")
+    shutdown_flag = True
 
-# Main Execution
-if __name__ == "__main__":
+# Function to manage the entire process
+def start_process():
+    """Starts the data fetching and training processes."""
     try:
         # Start the data fetching thread
-        data_thread = threading.Thread(target=data_fetching_thread)
-        data_thread.daemon = True
-        data_thread.start()
+        logger.info("Starting data fetching thread.")
+        fetch_thread = threading.Thread(target=start_data_fetching_thread, daemon=True)
+        fetch_thread.start()
 
-        # Run the training loop
-        main_training_loop()
+        # Start the training loop
+        logger.info("Starting the training loop.")
+        while not shutdown_flag:
+            train_loop()
+            time.sleep(1)  # Add a small delay to prevent CPU hogging
 
-    except KeyboardInterrupt:
-        logger.info("Training interrupted. Shutting down...")
     except Exception as e:
-        logger.error(f"Unexpected error: {e}")
+        logger.error(f"An error occurred while starting the process: {e}")
+        raise
+
+# Main function to manage threading and process control
+if __name__ == "__main__":
+    # Set up signal handling for graceful shutdown
+    signal.signal(signal.SIGINT, handle_shutdown_signal)
+    signal.signal(signal.SIGTERM, handle_shutdown_signal)
+
+    logger.info("Main process started.")
+    start_process()  # Start the process
+
+    logger.info("Process ended.")
