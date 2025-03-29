@@ -3,7 +3,7 @@ import time
 import logging
 import signal
 import sys
-from coinbase_rustRNN import train_loop, shutdown_event, data_fetching_thread, logger
+from src.coinbase_rustRNN import train_loop, shutdown_event, data_fetching_thread, logger  # Corrected import
 
 # Set up logging for main.py
 logging.basicConfig(level=logging.INFO)
