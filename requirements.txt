@@ -2,4 +2,3 @@ torch
 requests
 numpy
 logging
-CUDA
