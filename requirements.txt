@@ -1,4 +1,4 @@
-torch==2.0.0+cu118
+torch
 requests
 numpy
 logging
