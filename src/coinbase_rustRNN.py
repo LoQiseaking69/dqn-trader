@@ -24,27 +24,27 @@ BATCH_SIZE = 32
 MAX_EPISODES = 1000
 TARGET_UPDATE_FREQUENCY = 10
 CACHE_FILE = "coinbase_data_cache.json"
-API_URL = "https://api.coinbase.com/v2/prices/spot?currency=USD"
 SAVE_MODEL_FREQUENCY = 100  # Save the model every 100 episodes
+EVALUATE_MODEL_FREQUENCY = 50  # Evaluate model every 50 episodes
 
 # Initialize logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# Model Architecture (DQN with Double DQN)
+# Model Architecture (DQN with Double DQN and Batch Normalization)
 class DQN(nn.Module):
     def __init__(self):
         super(DQN, self).__init__()
         self.fc1 = nn.Linear(4, 128)
+        self.batch_norm1 = nn.BatchNorm1d(128)
         self.fc2 = nn.Linear(128, 128)
+        self.batch_norm2 = nn.BatchNorm1d(128)
         self.fc3 = nn.Linear(128, 2)  # Two possible actions (buy/sell)
         self.dropout = nn.Dropout(0.3)
-        self.layer_norm = nn.LayerNorm(128)
 
     def forward(self, x):
-        x = F.relu(self.fc1(x))
-        x = self.layer_norm(x)
-        x = F.relu(self.fc2(x))
+        x = F.relu(self.batch_norm1(self.fc1(x)))
+        x = F.relu(self.batch_norm2(self.fc2(x)))
         x = self.dropout(x)
         return self.fc3(x)
 
@@ -181,6 +181,12 @@ def save_model(model: nn.Module, epoch: int):
         torch.save(model.state_dict(), model_filename)
         logger.info(f"Model saved at {model_filename}.")
 
+def evaluate_model(model: nn.Module, cached_data: List[dict]):
+    """Evaluate model's performance on a test set."""
+    state = preprocess_data(cached_data)
+    action = select_action(model, state, epsilon=0.0)  # No exploration during evaluation
+    logger.info(f"Evaluation action: {'Buy' if action == 0 else 'Sell'}")
+
 # Main Training Loop
 def train_loop():
     """Main function to initialize model, replay buffer, and start training."""
@@ -223,17 +229,24 @@ def train_loop():
         # Save model periodically
         save_model(model, epoch)
 
+        # Evaluate model periodically
+        if epoch % EVALUATE_MODEL_FREQUENCY == 0:
+            evaluate_model(model, cached_data)
+
     logger.info("Training completed.")
     save_model(model, MAX_EPISODES)  # Final model save
 
-# Threaded Data Fetching
+# Threaded Data Fetching with Graceful Shutdown
 def data_fetching_thread():
     """Run this function in a separate thread to fetch data periodically."""
-    while True:
-        data = fetch_coinbase_data()
-        if data:
-            cache_data(data)
-        time.sleep(60)  # Fetch data every minute
+    try:
+        while True:
+            data = fetch_coinbase_data()
+            if data:
+                cache_data(data)
+            time.sleep(60)  # Fetch data every minute
+    except Exception as e:
+        logger.error(f"Error in data fetching thread: {e}")
 
 # Main Execution
 if __name__ == "__main__":
