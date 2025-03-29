@@ -24,6 +24,7 @@ TARGET_UPDATE = 10
 CACHE_FILE = "coinbase_cache.json"
 API_URL = "https://api.coinbase.com/v2/prices/USDC-USD/spot"
 SAVE_MODEL_FREQ = 50
+SAVE_BEST_MODEL = True
 
 # Logging Setup
 logging.basicConfig(level=logging.INFO)
@@ -35,7 +36,7 @@ class DQN(nn.Module):
         super(DQN, self).__init__()
         self.fc1 = nn.Linear(4, 128)
         self.fc2 = nn.Linear(128, 128)
-        self.fc3 = nn.Linear(128, 2)
+        self.fc3 = nn.Linear(128, 2)  # 2 actions (buy, sell)
         self.bn1 = nn.BatchNorm1d(128)
         self.bn2 = nn.BatchNorm1d(128)
         
@@ -64,14 +65,17 @@ class ReplayBuffer:
         return len(self.buffer)
 
 # Initialize
-policy_net = DQN()
-target_net = DQN()
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")  # Check for GPU
+policy_net = DQN().to(device)
+target_net = DQN().to(device)
 target_net.load_state_dict(policy_net.state_dict())
 optimizer = optim.Adam(policy_net.parameters(), lr=LR)
 buffer = ReplayBuffer(BUFFER_CAPACITY)
 step_count = 0
+best_model = None
+best_loss = float('inf')
 
-# Fetch Data
+# Fetch Data from Coinbase API
 def fetch_data():
     try:
         response = requests.get(API_URL, timeout=5)
@@ -87,11 +91,28 @@ def save_cache():
     with open(CACHE_FILE, 'w') as f:
         json.dump([exp for exp in buffer.buffer], f)
 
-# Signal Handling
+# Save Best Model
+def save_best_model():
+    global best_model, best_loss
+    current_loss = calculate_loss(policy_net)
+    if current_loss < best_loss:
+        best_loss = current_loss
+        best_model = policy_net.state_dict()
+        torch.save(best_model, "best_dqn_model.pth")
+        logger.info("New best model saved!")
+
+# Calculate Loss for Evaluation
+def calculate_loss(model):
+    # Placeholder logic for validation loss or other evaluation metrics
+    return np.random.rand()  # In real scenario, calculate proper validation loss
+
+# Signal Handling for Graceful Shutdown
 def handle_exit(sig, frame):
-    logger.info("Signal received. Saving model...")
+    logger.info("Signal received. Saving model and cache...")
     torch.save(policy_net.state_dict(), "dqn_model.pth")
     save_cache()
+    if SAVE_BEST_MODEL and best_model is not None:
+        torch.save(best_model, "best_dqn_model.pth")
     exit(0)
 
 signal.signal(signal.SIGINT, handle_exit)
@@ -99,43 +120,44 @@ signal.signal(signal.SIGTERM, handle_exit)
 
 # Training Loop
 for episode in range(1, 1001):
-    state = np.random.rand(4)  # Replace with meaningful state
+    state = np.random.rand(4)  # Initial random state
     done = False
     
     while not done:
-        # Epsilon-Greedy
+        # Epsilon-Greedy Action Selection
         if np.random.rand() < EPSILON:
-            action = np.random.choice([0, 1])
+            action = np.random.choice([0, 1])  # Random action (0 = buy, 1 = sell)
         else:
-            state_tensor = torch.FloatTensor(state).unsqueeze(0)
+            state_tensor = torch.FloatTensor(state).unsqueeze(0).to(device)
             action = policy_net(state_tensor).argmax().item()
         
-        # Fetch next state and reward
+        # Fetch next state and reward based on market data
         next_price = fetch_data()
         if next_price is None:
-            continue
-        next_state = np.random.rand(4)  # Placeholder for next state
-        reward = np.random.rand()  # Placeholder for reward
+            continue  # Skip if fetch failed
         
-        # Compute TD Error
-        state_tensor = torch.FloatTensor(state)
-        next_state_tensor = torch.FloatTensor(next_state)
+        next_state = np.array([next_price, state[1], state[2], state[3]])  # Simplified state transition
+        reward = 0.1 if action == 0 else -0.1  # Placeholder reward: reward for buying or selling
+        
+        # Compute Temporal Difference (TD) Error
+        state_tensor = torch.FloatTensor(state).to(device)
+        next_state_tensor = torch.FloatTensor(next_state).to(device)
         q_value = policy_net(state_tensor)[action]
         with torch.no_grad():
             q_next = target_net(next_state_tensor).max()
         td_error = reward + GAMMA * q_next - q_value.item()
         
-        # Store in Replay Buffer
+        # Store Experience in Replay Buffer
         buffer.push(state, action, reward, next_state, td_error)
         
-        # Sample and Update
+        # Sample and Update Model
         if len(buffer) >= BATCH_SIZE:
             batch = buffer.sample(BATCH_SIZE)
             states, actions, rewards, next_states, _ = zip(*batch)
-            states = torch.FloatTensor(states)
-            next_states = torch.FloatTensor(next_states)
-            actions = torch.LongTensor(actions).unsqueeze(1)
-            rewards = torch.FloatTensor(rewards).unsqueeze(1)
+            states = torch.FloatTensor(states).to(device)
+            next_states = torch.FloatTensor(next_states).to(device)
+            actions = torch.LongTensor(actions).unsqueeze(1).to(device)
+            rewards = torch.FloatTensor(rewards).unsqueeze(1).to(device)
             
             q_values = policy_net(states).gather(1, actions)
             q_next = target_net(next_states).max(1)[0].unsqueeze(1)
@@ -153,7 +175,7 @@ for episode in range(1, 1001):
         if EPSILON > MIN_EPSILON:
             EPSILON *= EPSILON_DECAY
         
-        # Update Target Network
+        # Update Target Network Periodically
         if step_count % TARGET_UPDATE == 0:
             target_net.load_state_dict(policy_net.state_dict())
         
@@ -162,7 +184,11 @@ for episode in range(1, 1001):
             torch.save(policy_net.state_dict(), f"dqn_model_{step_count}.pth")
             logger.info(f"Model saved at step {step_count}")
         
-        # End condition placeholder
-        done = np.random.rand() < 0.01
+        # Evaluate and Save Best Model
+        if SAVE_BEST_MODEL:
+            save_best_model()
+
+        # Placeholder for end condition (this should be replaced by actual exit logic)
+        done = np.random.rand() < 0.01  # Randomly stop the loop for demo purposes
 
 logger.info("Training complete.")
