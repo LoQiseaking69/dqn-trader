@@ -1,300 +1,252 @@
-use rand::seq::SliceRandom;
-use std::collections::VecDeque;
-use std::fs::{self, File};
-use std::path::Path;
-use serde::{Deserialize, Serialize};
-use reqwest::{Client, Error};
-use chrono::prelude::*;
-use tch::{nn, Device, Tensor};
-use std::sync::{Arc, RwLock};
-use tokio::{sync::Mutex, task};
-use rand::Rng;
+import random
+import torch
+import torch.nn as nn
+import torch.optim as optim
+import torch.nn.functional as F
+import numpy as np
+import requests
+import json
+import os
+import threading
+import time
+import logging
+from collections import deque
+from typing import List, Tuple
+from datetime import datetime
 
-// -- Replay Buffer with Prioritized Experience Replay --
+# Constants and Hyperparameters
+GAMMA = 0.99
+LEARNING_RATE = 1e-3
+EPSILON = 0.1
+EPSILON_DECAY = 0.995
+MIN_EPSILON = 0.01
+BATCH_SIZE = 32
+MAX_EPISODES = 1000
+TARGET_UPDATE_FREQUENCY = 10
+CACHE_FILE = "coinbase_data_cache.json"
+API_URL = "https://api.coinbase.com/v2/prices/spot?currency=USD"
+SAVE_MODEL_FREQUENCY = 100  # Save the model every 100 episodes
 
-#[derive(Clone, Debug)]
-pub struct Experience {
-    state: Vec<f32>,
-    action: usize,
-    reward: f32,
-    next_state: Vec<f32>,
-    td_error: f32, // Temporal Difference Error
-}
+# Initialize logging
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
-pub struct ReplayBuffer {
-    buffer: VecDeque<Experience>,
-    capacity: usize,
-}
+# Model Architecture (DQN with Double DQN)
+class DQN(nn.Module):
+    def __init__(self):
+        super(DQN, self).__init__()
+        self.fc1 = nn.Linear(4, 128)
+        self.fc2 = nn.Linear(128, 128)
+        self.fc3 = nn.Linear(128, 2)  # Two possible actions (buy/sell)
+        self.dropout = nn.Dropout(0.3)
+        self.layer_norm = nn.LayerNorm(128)
 
-impl ReplayBuffer {
-    pub fn new(capacity: usize) -> Self {
-        ReplayBuffer {
-            buffer: VecDeque::with_capacity(capacity),
-            capacity,
-        }
-    }
+    def forward(self, x):
+        x = F.relu(self.fc1(x))
+        x = self.layer_norm(x)
+        x = F.relu(self.fc2(x))
+        x = self.dropout(x)
+        return self.fc3(x)
 
-    pub fn push(&mut self, experience: Experience) {
-        if self.buffer.len() == self.capacity {
-            self.buffer.pop_front();
-        }
-        self.buffer.push_back(experience);
-    }
+# Experience and Replay Buffer (with Prioritized Experience Replay)
+class Experience:
+    def __init__(self, state, action, reward, next_state, td_error):
+        self.state = state
+        self.action = action
+        self.reward = reward
+        self.next_state = next_state
+        self.td_error = td_error
 
-    pub fn sample(&self, batch_size: usize) -> Vec<Experience> {
-        let len = self.buffer.len();
-        if len < batch_size {
-            return Vec::new(); // Prevent sampling from empty or insufficient buffer
-        }
+class ReplayBuffer:
+    def __init__(self, capacity):
+        self.buffer = deque(maxlen=capacity)
+        self.capacity = capacity
 
-        // Prioritized Sampling based on TD error
-        let total_error: f32 = self.buffer.iter().map(|exp| exp.td_error).sum();
-        let mut rng = rand::thread_rng();
-        self.buffer
-            .iter()
-            .choose_multiple_weighted(&mut rng, batch_size, |exp| exp.td_error / total_error)
-            .cloned()
-            .collect()
-    }
+    def push(self, experience: Experience):
+        if len(self.buffer) >= self.capacity:
+            self.buffer.popleft()
+        self.buffer.append(experience)
 
-    pub fn len(&self) -> usize {
-        self.buffer.len()
-    }
-}
+    def sample(self, batch_size):
+        if len(self.buffer) < batch_size:
+            return []
+        total_error = sum([exp.td_error for exp in self.buffer])
+        probabilities = [exp.td_error / total_error for exp in self.buffer]
+        indices = np.random.choice(len(self.buffer), batch_size, p=probabilities)
+        return [self.buffer[idx] for idx in indices]
 
-// -- DQN Model --
+    def len(self):
+        return len(self.buffer)
 
-#[derive(Debug)]
-struct DQN {
-    fc1: nn::Linear,
-    fc2: nn::Linear,
-    fc3: nn::Linear,
-    dropout: nn::Dropout, // Adding dropout for regularization
-}
+# Data Caching and Fetching from Coinbase API
+def fetch_coinbase_data() -> List[dict]:
+    """Fetch live data from Coinbase API."""
+    try:
+        response = requests.get(API_URL)
+        response.raise_for_status()  # Raise error for bad response
+        data = response.json()
+        return [data['data']]
+    except requests.exceptions.RequestException as e:
+        logger.error(f"Error fetching data from Coinbase API: {e}")
+        return []
 
-impl DQN {
-    fn new(vs: &nn::Path) -> DQN {
-        let fc1 = nn::linear(vs, 4, 128, Default::default()); // 4 input features
-        let fc2 = nn::linear(vs, 128, 128, Default::default());
-        let fc3 = nn::linear(vs, 128, 2, Default::default()); // 2 possible actions (buy/sell)
-        let dropout = nn::Dropout::new(0.3); // Dropout layer to prevent overfitting
-        DQN { fc1, fc2, fc3, dropout }
-    }
+def cache_data(data: List[dict]):
+    """Cache data in a JSON file."""
+    try:
+        with open(CACHE_FILE, 'w') as f:
+            json.dump(data, f)
+        logger.info(f"Data cached successfully.")
+    except Exception as e:
+        logger.error(f"Error caching data: {e}")
 
-    fn forward(&self, input: Tensor) -> Tensor {
-        let x = input.view([-1, 4]);
-        let x = x.apply(&self.fc1).relu();
-        let x = x.apply(&self.fc2).relu();
-        let x = self.dropout.forward(&x); // Apply dropout
-        self.fc3.forward(&x)
-    }
-}
+def load_cached_data() -> List[dict]:
+    """Load cached data from file."""
+    if os.path.exists(CACHE_FILE):
+        try:
+            with open(CACHE_FILE, 'r') as f:
+                return json.load(f)
+        except Exception as e:
+            logger.error(f"Error loading cached data: {e}")
+            return []
+    return []
 
-fn create_model() -> DQN {
-    let vs = nn::VarStore::new(Device::cuda_if_available());
-    DQN::new(&vs.root())
-}
+# Helper Functions
+def select_action(model: nn.Module, state: np.ndarray, epsilon: float) -> int:
+    """Select an action based on epsilon-greedy policy."""
+    state_tensor = torch.tensor(state, dtype=torch.float32).unsqueeze(0)
+    q_values = model(state_tensor)
+    if random.random() < epsilon:
+        return random.choice([0, 1])  # Random action (buy/sell)
+    return q_values.argmax().item()  # Best action (highest Q-value)
 
-// -- Training Loop with Adaptive Epsilon Decay and Advanced Reward --
+def preprocess_data(data: List[dict]) -> np.ndarray:
+    """Preprocess data to a usable format."""
+    if not data:
+        return np.zeros(4)
+    prices = [float(d['price']) for d in data]
+    return np.array([sum(prices), max(prices), min(prices), np.std(prices)])
 
-const GAMMA: f32 = 0.99;
-const LEARNING_RATE: f32 = 1e-3;
-const EPSILON: f32 = 0.1; // Exploration factor
-const EPSILON_DECAY: f32 = 0.995; // Decay rate for epsilon
-const MIN_EPSILON: f32 = 0.01;
-const BATCH_SIZE: usize = 32;
-const MAX_EPISODES: usize = 1000;
-const TARGET_UPDATE_FREQUENCY: usize = 10;
+def is_data_ready_for_training(data: List[dict], threshold: int = 100) -> bool:
+    """Check if enough data is available for training."""
+    return len(data) >= threshold
 
-fn train_dqn(
-    model: &DQN,
-    target_model: &DQN,
-    replay_buffer: &ReplayBuffer,
-    optimizer: &mut nn::Optimizer<nn::Adam>,
-    batch_size: usize,
-) {
-    let batch = replay_buffer.sample(batch_size);
+# Model Training
+def train_dqn(model: nn.Module, target_model: nn.Module, replay_buffer: ReplayBuffer, optimizer: optim.Optimizer, batch_size: int):
+    """Train the DQN model using a batch of experiences."""
+    batch = replay_buffer.sample(batch_size)
+    if len(batch) == 0:
+        return
 
-    if batch.is_empty() {
-        return; // Avoid training with empty batch
-    }
+    states = torch.tensor([exp.state for exp in batch], dtype=torch.float32)
+    actions = torch.tensor([exp.action for exp in batch], dtype=torch.int64)
+    rewards = torch.tensor([exp.reward for exp in batch], dtype=torch.float32)
+    next_states = torch.tensor([exp.next_state for exp in batch], dtype=torch.float32)
 
-    let mut states = Vec::new();
-    let mut actions = Vec::new();
-    let mut rewards = Vec::new();
-    let mut next_states = Vec::new();
-    let mut td_errors = Vec::new();
+    # Current Q values
+    q_values = model(states)
+    next_q_values = target_model(next_states)
 
-    for exp in batch {
-        states.push(exp.state);
-        actions.push(exp.action);
-        rewards.push(exp.reward);
-        next_states.push(exp.next_state);
-        td_errors.push(exp.td_error);
-    }
+    # Double DQN: Use main model to select actions, target model to compute target Q values
+    next_actions = q_values.argmax(dim=1)
+    max_next_q_values = next_q_values.gather(1, next_actions.unsqueeze(1)).squeeze(1)
 
-    let states_tensor = Tensor::of_slice(&states.concat()).view([batch_size as i64, 4]);
-    let next_states_tensor = Tensor::of_slice(&next_states.concat()).view([batch_size as i64, 4]);
+    # Compute target Q values
+    target_q_values = rewards + GAMMA * max_next_q_values
 
-    // Calculate Q-values for current states
-    let q_values = model.forward(states_tensor);
+    # Loss computation (MSE Loss)
+    selected_q_values = q_values.gather(1, actions.unsqueeze(1)).squeeze(1)
+    loss = F.mse_loss(selected_q_values, target_q_values)
 
-    // Calculate Q-values for next states using the target network
-    let next_q_values = target_model.forward(next_states_tensor);
+    # Backpropagation
+    optimizer.zero_grad()
+    loss.backward()
+    optimizer.step()
 
-    // Compute the target Q-values using the Bellman equation
-    let mut target_q_values = q_values.copy();
-    for i in 0..batch_size {
-        let max_next_q_value = next_q_values.i(i as i64).max_dim(0, false);
-        target_q_values.i_mut(i as i64).index_fill_(
-            0,
-            &Tensor::of_slice(&[actions[i]]),
-            rewards[i] + GAMMA * max_next_q_value,
-        );
-    }
+    # Update TD errors in replay buffer
+    for i in range(batch_size):
+        replay_buffer.buffer[i].td_error = abs(target_q_values[i] - selected_q_values[i]).item()
 
-    // Compute loss (Mean Squared Error)
-    let loss = target_q_values.mse_loss(&q_values, tch::Reduction::Mean);
+    logger.info(f"Loss: {loss.item()}")
 
-    // Backpropagate and optimize
-    optimizer.zero_grad();
-    loss.backward();
-    optimizer.step();
+def update_target_model(model: nn.Module, target_model: nn.Module, tau: float = 0.005):
+    """Soft update the target model."""
+    for target_param, param in zip(target_model.parameters(), model.parameters()):
+        target_param.data.copy_(tau * param.data + (1.0 - tau) * target_param.data)
 
-    // Update TD Errors in the Replay Buffer
-    for i in 0..batch_size {
-        replay_buffer.buffer[i].td_error = (target_q_values.i(i as i64).double_value(&[]) - q_values.i(i as i64).double_value(&[])) as f32;
-    }
+# Model Checkpointing
+def save_model(model: nn.Module, epoch: int):
+    """Save the model periodically."""
+    if epoch % SAVE_MODEL_FREQUENCY == 0:
+        model_filename = f"dqn_model_{epoch}.pth"
+        torch.save(model.state_dict(), model_filename)
+        logger.info(f"Model saved at {model_filename}.")
 
-    println!("Loss: {}", loss.double_value(&[]));
-}
+# Main Training Loop
+def train_loop():
+    """Main function to initialize model, replay buffer, and start training."""
+    model = DQN()
+    target_model = DQN()
+    optimizer = optim.Adam(model.parameters(), lr=LEARNING_RATE)
+    replay_buffer = ReplayBuffer(capacity=10000)
 
-// -- Data Caching --
+    # Fetch and cache data
+    data = fetch_coinbase_data()
+    cache_data(data)
 
-#[derive(Deserialize, Debug, Serialize)]
-struct CoinbaseData {
-    time: String,
-    price: String,
-}
+    # Load cached data
+    cached_data = load_cached_data()
 
-#[tokio::main]
-async fn fetch_coinbase_data() -> Result<Vec<CoinbaseData>, Error> {
-    let url = "https://api.coinbase.com/v2/prices/spot?currency=USD";
-    let client = Client::new();
-    let response = client.get(url).send().await?;
-    let data: Vec<CoinbaseData> = response.json().await?;
-    Ok(data)
-}
+    epsilon = EPSILON
+    for epoch in range(MAX_EPISODES):
+        state = preprocess_data(cached_data)
+        action = select_action(model, state, epsilon)
+        reward = 1.0 if action == 0 else -1.0  # Example reward (buy/sell)
 
-async fn cache_data(data: Vec<CoinbaseData>, cache_file: &str) {
-    let data_string = serde_json::to_string(&data).unwrap();
-    if let Err(e) = fs::write(cache_file, data_string) {
-        eprintln!("Error writing to cache file: {}", e);
-    }
-}
+        # Simulate next state (for simplicity, using same state here)
+        next_state = preprocess_data(cached_data)
+        experience = Experience(state, action, reward, next_state, 0.0)
+        replay_buffer.push(experience)
 
-fn load_cached_data(cache_file: &str) -> Vec<CoinbaseData> {
-    let path = Path::new(cache_file);
-    if path.exists() {
-        let data_string = fs::read_to_string(path).unwrap_or_else(|_| String::new());
-        serde_json::from_str(&data_string).unwrap_or_else(|_| Vec::new())
-    } else {
-        Vec::new()
-    }
-}
+        if replay_buffer.len() > BATCH_SIZE:
+            train_dqn(model, target_model, replay_buffer, optimizer, BATCH_SIZE)
 
-// -- Helper Functions --
+        if epoch % TARGET_UPDATE_FREQUENCY == 0:
+            update_target_model(model, target_model)
 
-fn is_data_ready_for_training(data: &Vec<CoinbaseData>, threshold: usize) -> bool {
-    data.len() >= threshold
-}
+        # Epsilon decay for exploration
+        epsilon = max(epsilon * EPSILON_DECAY, MIN_EPSILON)
 
-fn select_action(model: &DQN, state: Vec<f32>, epsilon: f32) -> usize {
-    let state_tensor = Tensor::of_slice(&state).view([1, 4]);
-    let q_values = model.forward(state_tensor);
-    let action = if rand::thread_rng().gen_bool(f64::from(epsilon)) {
-        rand::thread_rng().gen_range(0..2) // Random action (buy/sell)
-    } else {
-        q_values.argmax(1, false).int64_value(&[0]) as usize // Best action (highest Q-value)
-    };
-    action
-}
+        # Output progress
+        if epoch % 100 == 0:
+            logger.info(f"Episode {epoch}/{MAX_EPISODES}, Epsilon: {epsilon:.4f}")
 
-fn preprocess_data(data: Vec<CoinbaseData>) -> Vec<f32> {
-    // Simple preprocessing to convert Coinbase data into state representation
-    let prices: Vec<f32> = data.iter().map(|d| d.price.parse().unwrap_or(0.0)).collect();
-    vec![prices.iter().sum(), prices.iter().fold(f32::MIN, |a, &b| a.max(b))]
-}
+        # Save model periodically
+        save_model(model, epoch)
 
-// -- Target Model Update --
+    logger.info("Training completed.")
+    save_model(model, MAX_EPISODES)  # Final model save
 
-fn update_target_model(model: &DQN, target_model: &mut DQN, tau: f32) {
-    for (target_param, model_param) in target_model.fc1.parameters_mut().iter_mut().zip(model.fc1.parameters().iter()) {
-        *target_param = target_param * (1.0 - tau) + model_param * tau;
-    }
-    // Repeat for fc2 and fc3
-}
+# Threaded Data Fetching
+def data_fetching_thread():
+    """Run this function in a separate thread to fetch data periodically."""
+    while True:
+        data = fetch_coinbase_data()
+        if data:
+            cache_data(data)
+        time.sleep(60)  # Fetch data every minute
 
-// -- Main Function --
+# Main Execution
+if __name__ == "__main__":
+    try:
+        # Start data fetching in a separate thread
+        data_thread = threading.Thread(target=data_fetching_thread)
+        data_thread.daemon = True
+        data_thread.start()
 
-#[tokio::main]
-async fn main() {
-    let cache_file = "coinbase_data_cache.json";
-    let replay_buffer = Arc::new(Mutex::new(ReplayBuffer::new(10000)));
-    let model = create_model();
-    let target_model = create_model();
-    let mut optimizer = nn::Adam::default().build(&model.fc1, LEARNING_RATE).unwrap();
+        # Run the main training loop
+        train_loop()
 
-    // Fetch and cache data asynchronously
-    match fetch_coinbase_data().await {
-        Ok(processed_data) => {
-            // Cache the data for later use asynchronously
-            task::spawn(cache_data(processed_data.clone(), cache_file));
-
-            // Load the cached data
-            let cached_data = load_cached_data(cache_file);
-
-            // Trigger the next phase when enough data is gathered
-            let data_threshold = 100; // Set the threshold for how much data is needed
-            if is_data_ready_for_training(&cached_data, data_threshold) {
-                println!("Enough data collected, starting training...");
-
-                let mut epsilon = EPSILON;
-                for epoch in 0..MAX_EPISODES {
-                    let state = preprocess_data(cached_data.clone()); // Simulate state
-                    let action = select_action(&model, state.clone(), epsilon); // Choose action based on epsilon-greedy
-
-                    let reward = if action == 0 { 1.0 } else { -1.0 }; // Reward based on action (buy or sell)
-
-                    let next_state = preprocess_data(cached_data.clone());
-
-                    let experience = Experience {
-                        state,
-                        action,
-                        reward,
-                        next_state,
-                        td_error: 0.0, // Initialize TD error
-                    };
-
-                    let mut replay_buffer = replay_buffer.lock().await;
-                    replay_buffer.push(experience);
-
-                    if replay_buffer.len() > BATCH_SIZE {
-                        train_dqn(&model, &target_model, &replay_buffer, &mut optimizer, BATCH_SIZE);
-                    }
-
-                    if epoch % TARGET_UPDATE_FREQUENCY == 0 {
-                        update_target_model(&model, &mut target_model, 0.005); // Soft update
-                    }
-
-                    epsilon = (epsilon * EPSILON_DECAY).max(MIN_EPSILON);
-                }
-            } else {
-                println!("Not enough data yet. Waiting...");
-            }
-        }
-        Err(e) => {
-            eprintln!("Failed to fetch data: {}", e);
-        }
-    }
-}
+    except KeyboardInterrupt:
+        logger.info("Training interrupted. Shutting down...")
+    except Exception as e:
+        logger.error(f"Unexpected error: {e}")
