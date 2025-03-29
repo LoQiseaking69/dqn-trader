@@ -40,7 +40,7 @@ jobs:
         run: |
           echo "Starting main process..."
           nohup python3 main.py > main.log 2>&1 &
-          echo "Process running in background."
+          echo "Process running in background with PID $(pgrep -f 'python3 main.py')"
 
       - name: Monitor Logs
         if: always()
@@ -52,4 +52,28 @@ jobs:
         if: always()
         run: |
           echo "Stopping background process if running..."
-          pkill -f "python3 main.py" || echo "No process found."
+          PID=$(pgrep -f "python3 main.py")
+          if [ -n "$PID" ]; then
+            kill -9 $PID || echo "Failed to stop process with PID $PID"
+          else
+            echo "No running process found."
+
+      - name: Upload Best Model as Artifact
+        if: always()
+        run: |
+          echo "Uploading best model artifact..."
+          if [ -f "best_dqn_model.pth" ]; then
+            echo "Best model found, uploading..."
+            tar -czf best_dqn_model.tar.gz best_dqn_model.pth
+            echo "Artifact created: best_dqn_model.tar.gz"
+          else
+            echo "No best model found to upload."
+            exit 1
+          fi
+
+      - name: Upload Artifact
+        if: always()
+        uses: actions/upload-artifact@v3
+        with:
+          name: best_dqn_model
+          path: best_dqn_model.tar.gz
