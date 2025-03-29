@@ -11,7 +11,7 @@ import threading
 import time
 import logging
 from collections import deque
-from typing import List, Tuple
+from typing import List
 from datetime import datetime
 
 # Constants and Hyperparameters
@@ -24,8 +24,9 @@ BATCH_SIZE = 32
 MAX_EPISODES = 1000
 TARGET_UPDATE_FREQUENCY = 10
 CACHE_FILE = "coinbase_data_cache.json"
-SAVE_MODEL_FREQUENCY = 100  # Save the model every 100 episodes
-EVALUATE_MODEL_FREQUENCY = 50  # Evaluate model every 50 episodes
+SAVE_MODEL_FREQUENCY = 100
+EVALUATE_MODEL_FREQUENCY = 50
+API_URL = "https://api.coinbase.com/v2/prices/spot?currency=USD"
 
 # Initialize logging
 logging.basicConfig(level=logging.INFO)
@@ -60,11 +61,8 @@ class Experience:
 class ReplayBuffer:
     def __init__(self, capacity):
         self.buffer = deque(maxlen=capacity)
-        self.capacity = capacity
 
     def push(self, experience: Experience):
-        if len(self.buffer) >= self.capacity:
-            self.buffer.popleft()
         self.buffer.append(experience)
 
     def sample(self, batch_size):
@@ -78,17 +76,22 @@ class ReplayBuffer:
     def len(self):
         return len(self.buffer)
 
-# Data Caching and Fetching from Coinbase API
+# Advanced Data Fetching from Coinbase API with Retry Logic
 def fetch_coinbase_data() -> List[dict]:
-    """Fetch live data from Coinbase API."""
-    try:
-        response = requests.get(API_URL)
-        response.raise_for_status()  # Raise error for bad response
-        data = response.json()
-        return [data['data']]
-    except requests.exceptions.RequestException as e:
-        logger.error(f"Error fetching data from Coinbase API: {e}")
-        return []
+    """Fetch live data from Coinbase API with retry logic."""
+    retries = 5
+    for attempt in range(retries):
+        try:
+            response = requests.get(API_URL)
+            response.raise_for_status()  # Raise error for bad responses
+            data = response.json()
+            return [data['data']]
+        except requests.exceptions.RequestException as e:
+            logger.error(f"Error fetching data (attempt {attempt+1}/{retries}): {e}")
+            if attempt < retries - 1:
+                time.sleep(2 ** attempt)  # Exponential backoff
+            else:
+                return []
 
 def cache_data(data: List[dict]):
     """Cache data in a JSON file."""
@@ -110,27 +113,29 @@ def load_cached_data() -> List[dict]:
             return []
     return []
 
-# Helper Functions
+# Data Preprocessing and Feature Extraction
+def preprocess_data(data: List[dict]) -> np.ndarray:
+    """Preprocess data into a feature vector with robust handling."""
+    if not data:
+        return np.zeros(4)
+    prices = [float(d['price']) for d in data]
+    max_price = max(prices)
+    min_price = min(prices)
+    avg_price = sum(prices) / len(prices)
+    std_dev = np.std(prices)
+
+    return np.array([avg_price, max_price, min_price, std_dev])
+
+# Action Selection with Exploration Strategy
 def select_action(model: nn.Module, state: np.ndarray, epsilon: float) -> int:
-    """Select an action based on epsilon-greedy policy."""
+    """Select action based on epsilon-greedy policy."""
     state_tensor = torch.tensor(state, dtype=torch.float32).unsqueeze(0)
     q_values = model(state_tensor)
     if random.random() < epsilon:
         return random.choice([0, 1])  # Random action (buy/sell)
     return q_values.argmax().item()  # Best action (highest Q-value)
 
-def preprocess_data(data: List[dict]) -> np.ndarray:
-    """Preprocess data to a usable format."""
-    if not data:
-        return np.zeros(4)
-    prices = [float(d['price']) for d in data]
-    return np.array([sum(prices), max(prices), min(prices), np.std(prices)])
-
-def is_data_ready_for_training(data: List[dict], threshold: int = 100) -> bool:
-    """Check if enough data is available for training."""
-    return len(data) >= threshold
-
-# Model Training
+# Model Training Logic
 def train_dqn(model: nn.Module, target_model: nn.Module, replay_buffer: ReplayBuffer, optimizer: optim.Optimizer, batch_size: int):
     """Train the DQN model using a batch of experiences."""
     batch = replay_buffer.sample(batch_size)
@@ -187,7 +192,7 @@ def evaluate_model(model: nn.Module, cached_data: List[dict]):
     action = select_action(model, state, epsilon=0.0)  # No exploration during evaluation
     logger.info(f"Evaluation action: {'Buy' if action == 0 else 'Sell'}")
 
-# Main Training Loop
+# Main Training Loop with Enhanced Control
 def train_loop():
     """Main function to initialize model, replay buffer, and start training."""
     model = DQN()
@@ -197,7 +202,8 @@ def train_loop():
 
     # Fetch and cache data
     data = fetch_coinbase_data()
-    cache_data(data)
+    if data:
+        cache_data(data)
 
     # Load cached data
     cached_data = load_cached_data()
@@ -250,16 +256,5 @@ def data_fetching_thread():
 
 # Main Execution
 if __name__ == "__main__":
-    try:
-        # Start data fetching in a separate thread
-        data_thread = threading.Thread(target=data_fetching_thread)
-        data_thread.daemon = True
-        data_thread.start()
-
-        # Run the main training loop
-        train_loop()
-
-    except KeyboardInterrupt:
-        logger.info("Training interrupted. Shutting down...")
-    except Exception as e:
-        logger.error(f"Unexpected error: {e}")
+    threading.Thread(target=data_fetching_thread, daemon=True).start()
+    train_loop()
