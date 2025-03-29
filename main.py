@@ -21,22 +21,32 @@ def handle_shutdown_signal(signum, frame):
 # Function to manage the entire process
 def start_process():
     """Starts the data fetching and training processes."""
-    # Start the data fetching thread
-    logger.info("Starting data fetching thread.")
-    fetch_thread = threading.Thread(target=start_data_fetching_thread, daemon=True)
-    fetch_thread.start()
-
-    # Start the training loop in the main thread
-    logger.info("Starting the training loop.")
     try:
+        # Start the data fetching thread
+        logger.info("Starting data fetching thread.")
+        fetch_thread = threading.Thread(target=start_data_fetching_thread, daemon=True)
+        fetch_thread.start()
+
+        # Start the training loop in the main thread
+        logger.info("Starting the training loop.")
         while not shutdown_event.is_set():
-            train_loop()
-            time.sleep(1)  # Small delay to prevent CPU hogging
+            # Ensure that the training loop can be stopped gracefully
+            if shutdown_event.is_set():
+                logger.info("Shutdown signal detected. Terminating training loop.")
+                break
+            try:
+                train_loop()  # Training process
+                time.sleep(1)  # Small delay to prevent CPU hogging
+            except Exception as e:
+                logger.error(f"An error occurred during training: {e}")
+                break
+
+        logger.info("Training loop terminated.")
     except Exception as e:
-        logger.error(f"An error occurred during training: {e}")
+        logger.error(f"Unexpected error in start_process: {e}")
         raise
     finally:
-        logger.info("Training loop terminated.")
+        logger.info("Main process clean-up done.")
 
 # Main Execution
 if __name__ == "__main__":
@@ -45,7 +55,12 @@ if __name__ == "__main__":
     signal.signal(signal.SIGTERM, handle_shutdown_signal)
 
     logger.info("Main process started.")
-    start_process()
-
-    # Wait for data thread to finish if necessary (it is daemonized)
-    logger.info("Process ended gracefully.")
+    try:
+        start_process()  # Start both data fetching and training loops
+    except KeyboardInterrupt:
+        logger.info("Training interrupted by user.")
+    except Exception as e:
+        logger.error(f"Unexpected error: {e}")
+    finally:
+        # Ensure process ends gracefully
+        logger.info("Process ended gracefully.")
