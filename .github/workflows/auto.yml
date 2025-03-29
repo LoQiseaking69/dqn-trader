@@ -42,11 +42,22 @@ jobs:
           nohup python3 main.py > main.log 2>&1 &
           echo "Process running in background with PID $(pgrep -f 'python3 main.py')"
 
-      - name: Monitor Logs
+      - name: Monitor Logs (Tail)
         if: always()
         run: |
-          echo "Checking recent logs..."
+          echo "Monitoring logs..."
           tail -n 50 main.log || echo "No logs found."
+
+      - name: Monitor Logs (Live Tail)
+        if: always()
+        run: |
+          echo "Live monitoring logs..."
+          tail -f main.log &
+
+      - name: Wait for Training Process to Complete
+        run: |
+          echo "Waiting for process completion..."
+          wait $(pgrep -f 'python3 main.py')
 
       - name: Cleanup Background Process
         if: always()
@@ -58,20 +69,20 @@ jobs:
           else
             echo "No running process found."
 
-      - name: Upload Best Model as Artifact
+      - name: Check Best Model and Upload as Artifact
         if: always()
         run: |
-          echo "Uploading best model artifact..."
+          echo "Checking if best model exists..."
           if [ -f "best_dqn_model.pth" ]; then
-            echo "Best model found, uploading..."
+            echo "Best model found, preparing for upload..."
             tar -czf best_dqn_model.tar.gz best_dqn_model.pth
             echo "Artifact created: best_dqn_model.tar.gz"
           else
-            echo "No best model found to upload."
+            echo "No best model found to upload. Skipping upload."
             exit 1
           fi
 
-      - name: Upload Artifact
+      - name: Upload Best Model as Artifact
         if: always()
         uses: actions/upload-artifact@v3
         with:
