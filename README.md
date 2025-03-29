@@ -66,15 +66,13 @@ These dependencies are defined in the `Cargo.toml` file.
 
 ```
 dqn-trader/
-â
-âââ src/
-â   âââ main.rs               # Main program logic
-â   âââ replay_buffer.rs      # Defines the experience replay buffer and prioritized sampling
-â   âââ dqn.rs                # Defines the DQN model (neural network)
-â   âââ utils.rs              # Utility functions for data handling, including caching and preprocessing
-â
-âââ Cargo.toml                # Cargo configuration and dependencies
-âââ README.md                 # Project documentation
+├── src/
+│   ├── main.rs               # Main program logic
+│   ├── replay_buffer.rs      # Defines the experience replay buffer and prioritized sampling
+│   ├── dqn.rs                # Defines the DQN model (neural network)
+│   └── utils.rs              # Utility functions for data handling, including caching and preprocessing
+├── Cargo.toml                # Cargo configuration and dependencies
+└── README.md                 # Project documentation
 ```
 
 ## Usage
