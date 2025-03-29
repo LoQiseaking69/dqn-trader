@@ -1,3 +1,7 @@
+import threading
+import signal
+import time
+import logging
 import torch
 import torch.nn as nn
 import torch.optim as optim
@@ -5,10 +9,6 @@ import torch.nn.functional as F
 import numpy as np
 import requests
 import json
-import os
-import signal
-import time
-import logging
 from collections import deque
 from datetime import datetime
 
@@ -30,7 +30,7 @@ SAVE_BEST_MODEL = True
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("coinbase_rustRNN")
 
-# Model
+# DQN Model Definition
 class DQN(nn.Module):
     def __init__(self):
         super(DQN, self).__init__()
@@ -118,77 +118,121 @@ def handle_exit(sig, frame):
 signal.signal(signal.SIGINT, handle_exit)
 signal.signal(signal.SIGTERM, handle_exit)
 
+# Global flag for graceful shutdown
+shutdown_event = threading.Event()
+
+def signal_handler(sig, frame):
+    """Handle graceful shutdown on SIGINT or SIGTERM."""
+    logger.info("Shutdown signal received. Stopping processes...")
+    shutdown_event.set()
+
+# Data Fetching Thread
+def data_fetching_thread():
+    while not shutdown_event.is_set():
+        price = fetch_data()
+        if price is not None:
+            logger.info(f"Fetched price: {price}")
+        time.sleep(5)  # Fetch data every 5 seconds
+
 # Training Loop
-for episode in range(1, 1001):
-    state = np.random.rand(4)  # Initial random state
-    done = False
-    
-    while not done:
-        # Epsilon-Greedy Action Selection
-        if np.random.rand() < EPSILON:
-            action = np.random.choice([0, 1])  # Random action (0 = buy, 1 = sell)
-        else:
-            state_tensor = torch.FloatTensor(state).unsqueeze(0).to(device)
-            action = policy_net(state_tensor).argmax().item()
+def train_loop():
+    global step_count
+    for episode in range(1, 1001):
+        state = np.random.rand(4)  # Initial random state
+        done = False
         
-        # Fetch next state and reward based on market data
-        next_price = fetch_data()
-        if next_price is None:
-            continue  # Skip if fetch failed
-        
-        next_state = np.array([next_price, state[1], state[2], state[3]])  # Simplified state transition
-        reward = 0.1 if action == 0 else -0.1  # Placeholder reward: reward for buying or selling
-        
-        # Compute Temporal Difference (TD) Error
-        state_tensor = torch.FloatTensor(state).to(device)
-        next_state_tensor = torch.FloatTensor(next_state).to(device)
-        q_value = policy_net(state_tensor)[action]
-        with torch.no_grad():
-            q_next = target_net(next_state_tensor).max()
-        td_error = reward + GAMMA * q_next - q_value.item()
-        
-        # Store Experience in Replay Buffer
-        buffer.push(state, action, reward, next_state, td_error)
-        
-        # Sample and Update Model
-        if len(buffer) >= BATCH_SIZE:
-            batch = buffer.sample(BATCH_SIZE)
-            states, actions, rewards, next_states, _ = zip(*batch)
-            states = torch.FloatTensor(states).to(device)
-            next_states = torch.FloatTensor(next_states).to(device)
-            actions = torch.LongTensor(actions).unsqueeze(1).to(device)
-            rewards = torch.FloatTensor(rewards).unsqueeze(1).to(device)
+        while not done:
+            # Epsilon-Greedy Action Selection
+            if np.random.rand() < EPSILON:
+                action = np.random.choice([0, 1])  # Random action (0 = buy, 1 = sell)
+            else:
+                state_tensor = torch.FloatTensor(state).unsqueeze(0).to(device)
+                action = policy_net(state_tensor).argmax().item()
             
-            q_values = policy_net(states).gather(1, actions)
-            q_next = target_net(next_states).max(1)[0].unsqueeze(1)
-            target = rewards + GAMMA * q_next
+            # Fetch next state and reward based on market data
+            next_price = fetch_data()
+            if next_price is None:
+                continue  # Skip if fetch failed
             
-            loss = F.mse_loss(q_values, target)
-            optimizer.zero_grad()
-            loss.backward()
-            optimizer.step()
-        
-        state = next_state
-        step_count += 1
-        
-        # Decay Epsilon
-        if EPSILON > MIN_EPSILON:
-            EPSILON *= EPSILON_DECAY
-        
-        # Update Target Network Periodically
-        if step_count % TARGET_UPDATE == 0:
-            target_net.load_state_dict(policy_net.state_dict())
-        
-        # Save Model Periodically
-        if step_count % SAVE_MODEL_FREQ == 0:
-            torch.save(policy_net.state_dict(), f"dqn_model_{step_count}.pth")
-            logger.info(f"Model saved at step {step_count}")
-        
-        # Evaluate and Save Best Model
-        if SAVE_BEST_MODEL:
-            save_best_model()
+            next_state = np.array([next_price, state[1], state[2], state[3]])  # Simplified state transition
+            reward = 0.1 if action == 0 else -0.1  # Placeholder reward: reward for buying or selling
+            
+            # Compute Temporal Difference (TD) Error
+            state_tensor = torch.FloatTensor(state).to(device)
+            next_state_tensor = torch.FloatTensor(next_state).to(device)
+            q_value = policy_net(state_tensor)[action]
+            with torch.no_grad():
+                q_next = target_net(next_state_tensor).max()
+            td_error = reward + GAMMA * q_next - q_value.item()
+            
+            # Store Experience in Replay Buffer
+            buffer.push(state, action, reward, next_state, td_error)
+            
+            # Sample and Update Model
+            if len(buffer) >= BATCH_SIZE:
+                batch = buffer.sample(BATCH_SIZE)
+                states, actions, rewards, next_states, _ = zip(*batch)
+                states = torch.FloatTensor(states).to(device)
+                next_states = torch.FloatTensor(next_states).to(device)
+                actions = torch.LongTensor(actions).unsqueeze(1).to(device)
+                rewards = torch.FloatTensor(rewards).unsqueeze(1).to(device)
+                
+                q_values = policy_net(states).gather(1, actions)
+                q_next = target_net(next_states).max(1)[0].unsqueeze(1)
+                target = rewards + GAMMA * q_next
+                
+                loss = F.mse_loss(q_values, target)
+                optimizer.zero_grad()
+                loss.backward()
+                optimizer.step()
+            
+            state = next_state
+            step_count += 1
+            
+            # Decay Epsilon
+            if EPSILON > MIN_EPSILON:
+                EPSILON *= EPSILON_DECAY
+            
+            # Update Target Network Periodically
+            if step_count % TARGET_UPDATE == 0:
+                target_net.load_state_dict(policy_net.state_dict())
+            
+            # Save Model Periodically
+            if step_count % SAVE_MODEL_FREQ == 0:
+                torch.save(policy_net.state_dict(), f"dqn_model_{step_count}.pth")
+                logger.info(f"Model saved at step {step_count}")
+            
+            # Evaluate and Save Best Model
+            if SAVE_BEST_MODEL:
+                save_best_model()
 
-        # Placeholder for end condition (this should be replaced by actual exit logic)
-        done = np.random.rand() < 0.01  # Randomly stop the loop for demo purposes
+            # Placeholder for end condition (this should be replaced by actual exit logic)
+            done = np.random.rand() < 0.01  # Randomly stop the loop for demo purposes
 
-logger.info("Training complete.")
+    logger.info("Training complete.")
+
+# Main function
+def main():
+    """Main function to start training and data fetching in parallel."""
+    # Set up signal handling for graceful shutdown
+    signal.signal(signal.SIGINT, signal_handler)
+    signal.signal(signal.SIGTERM, signal_handler)
+
+    # Start data fetching thread
+    data_thread = threading.Thread(target=data_fetching_thread, daemon=True)
+    data_thread.start()
+    logger.info("Data fetching thread started.")
+
+    # Start training in the main thread
+    try:
+        train_loop()
+    except Exception as e:
+        logger.error(f"Error in train_loop: {e}")
+
+    # Wait for shutdown event
+    while not shutdown_event.is_set():
+        time.sleep(1)
+
+    logger.info("Shutting down. Waiting for data thread to finish.")
+    data_thread.join()
+    logger.info("Shutdown complete.")
