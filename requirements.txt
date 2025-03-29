@@ -1,1 +1,4 @@
-
+torch
+requests
+numpy
+logging
