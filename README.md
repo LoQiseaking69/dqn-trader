@@ -1,13 +1,13 @@
-# SimpleFX - Coinbase USDC Trading Bot
+#dqnTrader - Coinbase USDC Trading Bot
 
 ## Overview
-SimpleFX is a deep reinforcement learning trading bot for USDC crypto pairs on Coinbase. It leverages a Double DQN with batch normalization and Prioritized Experience Replay (PER) for short-interval grid profit targeting.
+dqn-trader is a deep reinforcement learning trading bot for USDC crypto pairs on Coinbase. It leverages a Double DQN with batch normalization and Prioritized Experience Replay (PER) for short-interval grid profit targeting.
 
 ---
 
 ## Directory Structure
 ```
-simpleFX/
+dqn-trader/
 ├── src/
 │   └── coinbase_rustRNN.py
 ├── main.py
@@ -30,8 +30,8 @@ simpleFX/
 
 ### 1. Clone the Repository
 ```bash
-git clone https://github.com/yourusername/simpleFX.git
-cd simpleFX
+git clone https://github.com/LoQiseaking69/dqn-trader.git
+cd dqn-trader
 ```
 
 ### 2. Install Dependencies
