@@ -40,7 +40,7 @@ jobs:
         run: |
           echo "Starting main process..."
           nohup python3 main.py > main.log 2>&1 &
-          echo "Process running in background with PID $(pgrep -f 'python3 main.py')"
+          echo $! > main_pid.txt
 
       - name: Monitor Logs (Tail)
         if: always()
@@ -57,13 +57,14 @@ jobs:
       - name: Wait for Training Process to Complete
         run: |
           echo "Waiting for process completion..."
-          wait $(pgrep -f 'python3 main.py')
+          PID=$(cat main_pid.txt)
+          wait $PID
 
       - name: Cleanup Background Process
         if: always()
         run: |
           echo "Stopping background process if running..."
-          PID=$(pgrep -f "python3 main.py")
+          PID=$(cat main_pid.txt)
           if [ -n "$PID" ]; then
             kill -9 $PID || echo "Failed to stop process with PID $PID"
           else
