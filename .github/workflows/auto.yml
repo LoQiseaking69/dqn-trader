@@ -58,14 +58,17 @@ jobs:
         run: |
           echo "Waiting for process completion..."
           PID=$(cat main_pid.txt)
-          wait $PID
+          while kill -0 $PID 2> /dev/null; do
+            echo "Process $PID is still running..."
+            sleep 5
+          done
 
       - name: Cleanup Background Process
         if: always()
         run: |
           echo "Stopping background process if running..."
           PID=$(cat main_pid.txt)
-          if [ -n "$PID" ]; then
+          if kill -0 $PID 2> /dev/null; then
             kill -9 $PID || echo "Failed to stop process with PID $PID"
           else
             echo "No running process found."
