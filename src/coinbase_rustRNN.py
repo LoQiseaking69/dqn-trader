@@ -80,8 +80,8 @@ def fetch_data():
     try:
         response = requests.get(API_URL, timeout=5)
         response.raise_for_status()
-        price = float(response.json()['data']['amount'])
-        return price
+        data = response.json()
+        return float(data.get('data', {}).get('amount', 0))
     except Exception as e:
         logger.error(f"Data fetch failed: {e}")
         return None
@@ -98,7 +98,7 @@ def save_cache():
 # Save Best Model
 def save_best_model():
     global best_model, best_loss
-    current_loss = calculate_loss(policy_net)
+    current_loss = F.mse_loss(policy_net(torch.zeros(1, 4).to(device)), target_net(torch.zeros(1, 4).to(device))).item()
     if current_loss < best_loss:
         best_loss = current_loss
         best_model = policy_net.state_dict()
@@ -108,24 +108,21 @@ def save_best_model():
         except Exception as e:
             logger.error(f"Error saving best model: {e}")
 
-# Loss Calculation for Evaluation (Placeholder)
-def calculate_loss(model):
-    return np.random.rand()  # Replace with actual loss calculation logic
-
 # Signal Handling for Graceful Shutdown
 shutdown_event = threading.Event()
 
-def handle_exit(sig, frame):
+def signal_handler(sig, frame):
     logger.info("Shutdown signal received. Stopping processes...")
     shutdown_event.set()
     torch.save(policy_net.state_dict(), "dqn_model.pth")
     save_cache()
     if SAVE_BEST_MODEL and best_model is not None:
         torch.save(best_model, "best_dqn_model.pth")
+    exit(0)
 
-# Register the signal handlers for SIGINT and SIGTERM
-signal.signal(signal.SIGINT, handle_exit)
-signal.signal(signal.SIGTERM, handle_exit)
+# Register signal handlers
+signal.signal(signal.SIGINT, signal_handler)
+signal.signal(signal.SIGTERM, signal_handler)
 
 # Data Fetching Thread
 def data_fetching_thread():
@@ -133,13 +130,13 @@ def data_fetching_thread():
         price = fetch_data()
         if price is not None:
             logger.info(f"Fetched price: {price}")
-        time.sleep(5)  # Fetch data every 5 seconds
+        time.sleep(5)
 
 # Training Loop
 def train_loop():
     global step_count, EPSILON
     for episode in range(1, 1001):
-        state = np.random.rand(4)  # Initial random state
+        state = np.random.rand(4)
         done = False
         
         while not done:
@@ -147,16 +144,14 @@ def train_loop():
             
             next_price = fetch_data()
             if next_price is None:
-                continue  # Skip if fetch failed
+                continue
 
             next_state = np.array([next_price, state[1], state[2], state[3]])
-            reward = 0.1 if action == 0 else -0.1  # Placeholder reward
+            reward = 0.1 if action == 0 else -0.1
             
-            # Compute TD Error and store experience
             td_error = compute_td_error(state, action, reward, next_state)
             buffer.push(state, action, reward, next_state, td_error)
 
-            # Sample and Update Model
             if len(buffer) >= BATCH_SIZE:
                 batch = buffer.sample(BATCH_SIZE)
                 update_model(batch)
@@ -175,7 +170,6 @@ def train_loop():
             if SAVE_BEST_MODEL:
                 save_best_model()
 
-            # Random termination condition
             done = np.random.rand() < 0.01
 
     logger.info("Training complete.")
@@ -184,7 +178,7 @@ def train_loop():
 def select_action(state):
     global EPSILON
     if np.random.rand() < EPSILON:
-        return np.random.choice([0, 1])  # Random action (0 = buy, 1 = sell)
+        return np.random.choice([0, 1])
     else:
         with torch.no_grad():
             state_tensor = torch.FloatTensor(state).unsqueeze(0).to(device)
@@ -196,7 +190,7 @@ def compute_td_error(state, action, reward, next_state):
     next_state_tensor = torch.FloatTensor(next_state).unsqueeze(0).to(device)
     q_value = policy_net(state_tensor)[0, action]
     with torch.no_grad():
-        q_next = target_net(next_state_tensor).max(1)[0]
+        q_next = target_net(next_state_tensor).max(1)[0].detach()
     return reward + GAMMA * q_next.item() - q_value.item()
 
 # Update Model with Sampled Experience
@@ -208,33 +202,18 @@ def update_model(batch):
     rewards = torch.FloatTensor(rewards).unsqueeze(1).to(device)
 
     q_values = policy_net(states).gather(1, actions)
-    q_next = target_net(next_states).max(1)[0].unsqueeze(1)
-    target = rewards + GAMMA * q_next
+    q_next = target_net(next_states).max(1)[0].unsqueeze(1).detach()
+    target = rewards + (GAMMA * q_next)
 
     loss = F.mse_loss(q_values, target)
     optimizer.zero_grad()
     loss.backward()
     optimizer.step()
 
-# Update Epsilon (Decay over time)
-def update_epsilon(step_count):
-    global EPSILON
-    EPSILON = max(MIN_EPSILON, EPSILON * EPSILON_DECAY)
-
-# Main function to start training and data fetching in parallel
+# Main function
 def main():
-    data_thread = threading.Thread(target=data_fetching_thread, daemon=True)
-    data_thread.start()
-    logger.info("Data fetching thread started.")
-
-    try:
-        train_loop()
-    except Exception as e:
-        logger.error(f"Error in train_loop: {e}")
-
-    shutdown_event.set()
-    data_thread.join()
-    logger.info("Shutdown complete.")
+    threading.Thread(target=data_fetching_thread, daemon=True).start()
+    train_loop()
 
 if __name__ == "__main__":
     main()
