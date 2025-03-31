@@ -11,6 +11,7 @@ import requests
 import json
 from collections import deque
 from datetime import datetime
+import random
 
 # Constants
 GAMMA = 0.99
@@ -28,49 +29,78 @@ SAVE_BEST_MODEL = True
 
 # Logging Setup
 logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger("coinbase_rustRNN")
+logger = logging.getLogger("coinbase_dqn")
 
-# DQN Model Definition
-class DQN(nn.Module):
+# Dueling Double DQN Model Definition
+class DuelingDQN(nn.Module):
     def __init__(self):
-        super(DQN, self).__init__()
+        super(DuelingDQN, self).__init__()
         self.fc1 = nn.Linear(4, 128)
         self.fc2 = nn.Linear(128, 128)
-        self.fc3 = nn.Linear(128, 2)  # 2 actions (buy, sell)
+        
+        # State value stream
+        self.value_fc = nn.Linear(128, 1)
+        
+        # Advantage stream
+        self.advantage_fc = nn.Linear(128, 2)  # Two actions: buy, sell
+        
         self.bn1 = nn.BatchNorm1d(128)
         self.bn2 = nn.BatchNorm1d(128)
         
     def forward(self, x):
         x = F.relu(self.bn1(self.fc1(x)))
         x = F.relu(self.bn2(self.fc2(x)))
-        return self.fc3(x)
+        
+        value = self.value_fc(x)
+        advantage = self.advantage_fc(x)
+        
+        # Q-value = Value + Advantage - mean(Advantage)
+        q_values = value + advantage - advantage.mean()
+        return q_values
 
 # Replay Buffer with Prioritized Experience Replay
-class ReplayBuffer:
-    def __init__(self, capacity):
+class PrioritizedReplayBuffer:
+    def __init__(self, capacity, alpha=0.6, beta=0.4):
         self.buffer = deque(maxlen=capacity)
+        self.alpha = alpha
+        self.beta = beta
+        self.priorities = deque(maxlen=capacity)
     
     def push(self, state, action, reward, next_state, td_error):
         self.buffer.append((state, action, reward, next_state, td_error))
+        self.priorities.append(max(td_error, 1e-6))  # Avoid zero priority
     
     def sample(self, batch_size):
         if len(self.buffer) < batch_size:
             return []
-        probs = np.array([abs(exp[4]) for exp in self.buffer]) + 1e-6
-        probs /= probs.sum()
+        
+        # Calculate sampling probabilities based on priorities
+        priorities = np.array(self.priorities) ** self.alpha
+        probs = priorities / priorities.sum()
+        
         indices = np.random.choice(len(self.buffer), batch_size, p=probs)
-        return [self.buffer[idx] for idx in indices]
+        batch = [self.buffer[idx] for idx in indices]
+        
+        # Update importance sampling weight
+        weights = (len(self.buffer) * probs[indices]) ** (-self.beta)
+        weights /= weights.max()  # Normalize for stability
+        
+        return batch, weights, indices
     
+    def update_priorities(self, indices, td_errors):
+        for idx, td_error in zip(indices, td_errors):
+            self.priorities[idx] = max(td_error, 1e-6)
+
     def __len__(self):
         return len(self.buffer)
 
 # Initialize device and model
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-policy_net = DQN().to(device)
-target_net = DQN().to(device)
+policy_net = DuelingDQN().to(device)
+target_net = DuelingDQN().to(device)
 target_net.load_state_dict(policy_net.state_dict())
 optimizer = optim.Adam(policy_net.parameters(), lr=LR)
-buffer = ReplayBuffer(BUFFER_CAPACITY)
+buffer = PrioritizedReplayBuffer(BUFFER_CAPACITY)
 step_count = 0
 best_model = None
 best_loss = float('inf')
@@ -167,8 +197,8 @@ def train_loop():
             buffer.push(state, action, reward, next_state, td_error)
 
             if len(buffer) >= BATCH_SIZE:
-                batch = buffer.sample(BATCH_SIZE)
-                update_model(batch)
+                batch, weights, indices = buffer.sample(BATCH_SIZE)
+                update_model(batch, weights)
 
             state = next_state
             step_count += 1
@@ -208,17 +238,28 @@ def compute_td_error(state, action, reward, next_state):
     return reward + GAMMA * q_next.item() - q_value.item()
 
 # Update Model with Sampled Experience
-def update_model(batch):
+def update_model(batch, weights):
     states, actions, rewards, next_states, _ = zip(*batch)
     loss = calculate_loss(states, actions, rewards, next_states)
     
+    # Weighted loss
+    weights_tensor = torch.FloatTensor(weights).to(device)
+    loss = (loss * weights_tensor).mean()
+
     optimizer.zero_grad()
     loss.backward()
     optimizer.step()
 
-# Main function
+# Update Epsilon
+def update_epsilon(step_count):
+    global EPSILON
+    if EPSILON > MIN_EPSILON:
+        EPSILON *= EPSILON_DECAY
+
+# Main Function to Start Training
 def main():
-    threading.Thread(target=data_fetching_thread, daemon=True).start()
+    fetch_thread = threading.Thread(target=data_fetching_thread)
+    fetch_thread.start()
     train_loop()
 
 if __name__ == "__main__":
