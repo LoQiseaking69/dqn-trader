@@ -18,36 +18,46 @@ def handle_exit(sig, frame):
     logger.info("Shutdown process complete.")
     sys.exit(0)
 
-# Register signal handlers
+# Register signal handlers for SIGINT (Ctrl+C) and SIGTERM
 signal.signal(signal.SIGINT, handle_exit)
 signal.signal(signal.SIGTERM, handle_exit)
+
+def start_data_fetching_thread():
+    """Start the data fetching thread with error handling."""
+    try:
+        data_thread = threading.Thread(target=data_fetching_thread, daemon=True)
+        data_thread.start()
+        logger.info("Data fetching thread started.")
+        return data_thread
+    except Exception as e:
+        logger.error(f"Failed to start data fetching thread: {e}")
+        handle_exit(None, None)
+
+def start_training_loop():
+    """Start the training loop with error handling."""
+    try:
+        logger.info("Starting training loop...")
+        train_loop()
+    except Exception as e:
+        logger.error(f"Error in training loop: {e}")
+        handle_exit(None, None)
 
 def main():
     """Main entry point to start data fetching and training."""
     logger.info("Starting main process...")
 
     # Start data fetching thread
-    data_thread = threading.Thread(target=data_fetching_thread, daemon=True)
-    try:
-        data_thread.start()
-        logger.info("Data fetching thread started.")
-    except Exception as e:
-        logger.error(f"Failed to start data fetching thread: {e}")
-        handle_exit(None, None)
+    data_thread = start_data_fetching_thread()
 
     # Start training loop
-    try:
-        train_loop()
-    except Exception as e:
-        logger.error(f"Error in training loop: {e}")
-        handle_exit(None, None)
+    start_training_loop()
 
     # Keep main alive until shutdown is triggered
     while not shutdown_event.is_set():
         time.sleep(1)
 
     logger.info("Main process is shutting down. Waiting for threads to finish.")
-    data_thread.join()
+    data_thread.join()  # Ensure the data fetching thread completes before shutdown
     logger.info("Shutdown complete.")
 
 if __name__ == "__main__":
