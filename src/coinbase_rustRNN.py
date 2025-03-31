@@ -103,8 +103,7 @@ def save_best_model():
 
 # Calculate Loss for Evaluation
 def calculate_loss(model):
-    # Placeholder logic for validation loss or other evaluation metrics
-    return np.random.rand()  # In real scenario, calculate proper validation loss
+    return np.random.rand()  # Placeholder: Replace with proper validation loss calculation
 
 # Signal Handling for Graceful Shutdown
 def handle_exit(sig, frame):
@@ -136,7 +135,7 @@ def data_fetching_thread():
 
 # Training Loop
 def train_loop():
-    global step_count
+    global step_count, EPSILON
     for episode in range(1, 1001):
         state = np.random.rand(4)  # Initial random state
         done = False
@@ -155,9 +154,9 @@ def train_loop():
                 continue  # Skip if fetch failed
             
             next_state = np.array([next_price, state[1], state[2], state[3]])  # Simplified state transition
-            reward = 0.1 if action == 0 else -0.1  # Placeholder reward: reward for buying or selling
+            reward = 0.1 if action == 0 else -0.1  # Placeholder reward
             
-            # Compute Temporal Difference (TD) Error
+            # Compute TD Error
             state_tensor = torch.FloatTensor(state).to(device)
             next_state_tensor = torch.FloatTensor(next_state).to(device)
             q_value = policy_net(state_tensor)[action]
@@ -165,7 +164,7 @@ def train_loop():
                 q_next = target_net(next_state_tensor).max()
             td_error = reward + GAMMA * q_next - q_value.item()
             
-            # Store Experience in Replay Buffer
+            # Store Experience
             buffer.push(state, action, reward, next_state, td_error)
             
             # Sample and Update Model
@@ -190,8 +189,7 @@ def train_loop():
             step_count += 1
             
             # Decay Epsilon
-            if EPSILON > MIN_EPSILON:
-                EPSILON *= EPSILON_DECAY
+            EPSILON = max(MIN_EPSILON, EPSILON * EPSILON_DECAY)
             
             # Update Target Network Periodically
             if step_count % TARGET_UPDATE == 0:
@@ -206,33 +204,32 @@ def train_loop():
             if SAVE_BEST_MODEL:
                 save_best_model()
 
-            # Placeholder for end condition (this should be replaced by actual exit logic)
-            done = np.random.rand() < 0.01  # Randomly stop the loop for demo purposes
+            # Placeholder for end condition
+            done = np.random.rand() < 0.01
 
     logger.info("Training complete.")
 
 # Main function
 def main():
     """Main function to start training and data fetching in parallel."""
-    # Set up signal handling for graceful shutdown
     signal.signal(signal.SIGINT, signal_handler)
     signal.signal(signal.SIGTERM, signal_handler)
 
-    # Start data fetching thread
     data_thread = threading.Thread(target=data_fetching_thread, daemon=True)
     data_thread.start()
     logger.info("Data fetching thread started.")
 
-    # Start training in the main thread
     try:
         train_loop()
     except Exception as e:
         logger.error(f"Error in train_loop: {e}")
 
-    # Wait for shutdown event
     while not shutdown_event.is_set():
         time.sleep(1)
 
     logger.info("Shutting down. Waiting for data thread to finish.")
     data_thread.join()
     logger.info("Shutdown complete.")
+
+if __name__ == "__main__":
+    main()
