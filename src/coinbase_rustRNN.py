@@ -98,7 +98,7 @@ def save_cache():
 # Save Best Model
 def save_best_model():
     global best_model, best_loss
-    current_loss = F.mse_loss(policy_net(torch.zeros(1, 4).to(device)), target_net(torch.zeros(1, 4).to(device))).item()
+    current_loss = calculate_loss(torch.zeros(1, 4).to(device), 0, 0, torch.zeros(1, 4).to(device))
     if current_loss < best_loss:
         best_loss = current_loss
         best_model = policy_net.state_dict()
@@ -107,6 +107,20 @@ def save_best_model():
             logger.info("New best model saved!")
         except Exception as e:
             logger.error(f"Error saving best model: {e}")
+
+# Calculate Loss Function
+def calculate_loss(states, actions, rewards, next_states):
+    states = torch.FloatTensor(np.array(states)).to(device)
+    next_states = torch.FloatTensor(np.array(next_states)).to(device)
+    actions = torch.LongTensor(actions).unsqueeze(1).to(device)
+    rewards = torch.FloatTensor(rewards).unsqueeze(1).to(device)
+
+    q_values = policy_net(states).gather(1, actions)
+    q_next = target_net(next_states).max(1)[0].unsqueeze(1).detach()
+    target = rewards + (GAMMA * q_next)
+
+    loss = F.mse_loss(q_values, target)
+    return loss
 
 # Signal Handling for Graceful Shutdown
 shutdown_event = threading.Event()
@@ -196,16 +210,8 @@ def compute_td_error(state, action, reward, next_state):
 # Update Model with Sampled Experience
 def update_model(batch):
     states, actions, rewards, next_states, _ = zip(*batch)
-    states = torch.FloatTensor(np.array(states)).to(device)
-    next_states = torch.FloatTensor(np.array(next_states)).to(device)
-    actions = torch.LongTensor(actions).unsqueeze(1).to(device)
-    rewards = torch.FloatTensor(rewards).unsqueeze(1).to(device)
-
-    q_values = policy_net(states).gather(1, actions)
-    q_next = target_net(next_states).max(1)[0].unsqueeze(1).detach()
-    target = rewards + (GAMMA * q_next)
-
-    loss = F.mse_loss(q_values, target)
+    loss = calculate_loss(states, actions, rewards, next_states)
+    
     optimizer.zero_grad()
     loss.backward()
     optimizer.step()
