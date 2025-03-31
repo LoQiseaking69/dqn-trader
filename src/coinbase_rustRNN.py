@@ -64,7 +64,7 @@ class ReplayBuffer:
     def __len__(self):
         return len(self.buffer)
 
-# Initialize
+# Initialize device and model
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 policy_net = DQN().to(device)
 target_net = DQN().to(device)
@@ -86,10 +86,14 @@ def fetch_data():
         logger.error(f"Data fetch failed: {e}")
         return None
 
-# Save Cache
+# Save Cache to file
 def save_cache():
-    with open(CACHE_FILE, 'w') as f:
-        json.dump([exp for exp in buffer.buffer], f)
+    try:
+        with open(CACHE_FILE, 'w') as f:
+            json.dump([exp for exp in buffer.buffer], f)
+        logger.info(f"Cache saved to {CACHE_FILE}")
+    except Exception as e:
+        logger.error(f"Failed to save cache: {e}")
 
 # Save Best Model
 def save_best_model():
@@ -98,12 +102,15 @@ def save_best_model():
     if current_loss < best_loss:
         best_loss = current_loss
         best_model = policy_net.state_dict()
-        torch.save(best_model, "best_dqn_model.pth")
-        logger.info("New best model saved!")
+        try:
+            torch.save(best_model, "best_dqn_model.pth")
+            logger.info("New best model saved!")
+        except Exception as e:
+            logger.error(f"Error saving best model: {e}")
 
-# Calculate Loss for Evaluation (Placeholder)
+# Loss Calculation for Evaluation (Placeholder)
 def calculate_loss(model):
-    return np.random.rand()  # Replace with proper validation loss calculation
+    return np.random.rand()  # Replace with actual loss calculation logic
 
 # Signal Handling for Graceful Shutdown
 shutdown_event = threading.Event()
@@ -116,6 +123,7 @@ def handle_exit(sig, frame):
     if SAVE_BEST_MODEL and best_model is not None:
         torch.save(best_model, "best_dqn_model.pth")
 
+# Register the signal handlers for SIGINT and SIGTERM
 signal.signal(signal.SIGINT, handle_exit)
 signal.signal(signal.SIGTERM, handle_exit)
 
@@ -135,61 +143,35 @@ def train_loop():
         done = False
         
         while not done:
-            # Epsilon-Greedy Action Selection
-            if np.random.rand() < EPSILON:
-                action = np.random.choice([0, 1])  # Random action (0 = buy, 1 = sell)
-            else:
-                with torch.no_grad():
-                    state_tensor = torch.FloatTensor(state).unsqueeze(0).to(device)
-                    action = policy_net(state_tensor).argmax().item()
+            action = select_action(state)
             
-            # Fetch next state and reward based on market data
             next_price = fetch_data()
             if next_price is None:
                 continue  # Skip if fetch failed
-            
+
             next_state = np.array([next_price, state[1], state[2], state[3]])
             reward = 0.1 if action == 0 else -0.1  # Placeholder reward
             
-            # Compute TD Error
-            state_tensor = torch.FloatTensor(state).unsqueeze(0).to(device)
-            next_state_tensor = torch.FloatTensor(next_state).unsqueeze(0).to(device)
-            q_value = policy_net(state_tensor)[0, action]
-            with torch.no_grad():
-                q_next = target_net(next_state_tensor).max(1)[0]
-            td_error = reward + GAMMA * q_next.item() - q_value.item()
-            
-            # Store Experience
+            # Compute TD Error and store experience
+            td_error = compute_td_error(state, action, reward, next_state)
             buffer.push(state, action, reward, next_state, td_error)
-            
+
             # Sample and Update Model
             if len(buffer) >= BATCH_SIZE:
                 batch = buffer.sample(BATCH_SIZE)
-                states, actions, rewards, next_states, _ = zip(*batch)
-                states = torch.FloatTensor(np.array(states)).to(device)
-                next_states = torch.FloatTensor(np.array(next_states)).to(device)
-                actions = torch.LongTensor(actions).unsqueeze(1).to(device)
-                rewards = torch.FloatTensor(rewards).unsqueeze(1).to(device)
-                
-                q_values = policy_net(states).gather(1, actions)
-                q_next = target_net(next_states).max(1)[0].unsqueeze(1)
-                target = rewards + GAMMA * q_next
-                
-                loss = F.mse_loss(q_values, target)
-                optimizer.zero_grad()
-                loss.backward()
-                optimizer.step()
-            
+                update_model(batch)
+
             state = next_state
             step_count += 1
-            
-            # Periodic updates
-            EPSILON = max(MIN_EPSILON, EPSILON * EPSILON_DECAY)
+            update_epsilon(step_count)
+
             if step_count % TARGET_UPDATE == 0:
                 target_net.load_state_dict(policy_net.state_dict())
+            
             if step_count % SAVE_MODEL_FREQ == 0:
                 torch.save(policy_net.state_dict(), f"dqn_model_{step_count}.pth")
                 logger.info(f"Model saved at step {step_count}")
+                
             if SAVE_BEST_MODEL:
                 save_best_model()
 
@@ -198,9 +180,49 @@ def train_loop():
 
     logger.info("Training complete.")
 
-# Main function
+# Action Selection (Epsilon-Greedy)
+def select_action(state):
+    global EPSILON
+    if np.random.rand() < EPSILON:
+        return np.random.choice([0, 1])  # Random action (0 = buy, 1 = sell)
+    else:
+        with torch.no_grad():
+            state_tensor = torch.FloatTensor(state).unsqueeze(0).to(device)
+            return policy_net(state_tensor).argmax().item()
+
+# Compute TD Error
+def compute_td_error(state, action, reward, next_state):
+    state_tensor = torch.FloatTensor(state).unsqueeze(0).to(device)
+    next_state_tensor = torch.FloatTensor(next_state).unsqueeze(0).to(device)
+    q_value = policy_net(state_tensor)[0, action]
+    with torch.no_grad():
+        q_next = target_net(next_state_tensor).max(1)[0]
+    return reward + GAMMA * q_next.item() - q_value.item()
+
+# Update Model with Sampled Experience
+def update_model(batch):
+    states, actions, rewards, next_states, _ = zip(*batch)
+    states = torch.FloatTensor(np.array(states)).to(device)
+    next_states = torch.FloatTensor(np.array(next_states)).to(device)
+    actions = torch.LongTensor(actions).unsqueeze(1).to(device)
+    rewards = torch.FloatTensor(rewards).unsqueeze(1).to(device)
+
+    q_values = policy_net(states).gather(1, actions)
+    q_next = target_net(next_states).max(1)[0].unsqueeze(1)
+    target = rewards + GAMMA * q_next
+
+    loss = F.mse_loss(q_values, target)
+    optimizer.zero_grad()
+    loss.backward()
+    optimizer.step()
+
+# Update Epsilon (Decay over time)
+def update_epsilon(step_count):
+    global EPSILON
+    EPSILON = max(MIN_EPSILON, EPSILON * EPSILON_DECAY)
+
+# Main function to start training and data fetching in parallel
 def main():
-    """Main function to start training and data fetching in parallel."""
     data_thread = threading.Thread(target=data_fetching_thread, daemon=True)
     data_thread.start()
     logger.info("Data fetching thread started.")
