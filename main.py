@@ -13,10 +13,7 @@ logger = logging.getLogger("main")
 def handle_exit(sig, frame):
     """Handles system signals for graceful shutdown."""
     logger.info("Signal received. Initiating shutdown...")
-    shutdown_event.set()  # Trigger shutdown for threads and training
-    time.sleep(1)  # Allow processes to acknowledge shutdown
-    logger.info("Shutdown process complete.")
-    sys.exit(0)
+    shutdown_event.set()  # Trigger shutdown
 
 # Register signal handlers for SIGINT (Ctrl+C) and SIGTERM
 signal.signal(signal.SIGINT, handle_exit)
@@ -30,8 +27,8 @@ def start_data_fetching_thread():
         logger.info("Data fetching thread started.")
         return data_thread
     except Exception as e:
-        logger.error(f"Failed to start data fetching thread: {e}")
-        handle_exit(None, None)
+        logger.error("Failed to start data fetching thread", exc_info=True)
+        return None
 
 def start_training_loop():
     """Start the training loop with error handling."""
@@ -39,25 +36,27 @@ def start_training_loop():
         logger.info("Starting training loop...")
         train_loop()
     except Exception as e:
-        logger.error(f"Error in training loop: {e}")
-        handle_exit(None, None)
+        logger.error("Error in training loop", exc_info=True)
 
 def main():
     """Main entry point to start data fetching and training."""
     logger.info("Starting main process...")
 
-    # Start data fetching thread
     data_thread = start_data_fetching_thread()
-
-    # Start training loop
-    start_training_loop()
+    
+    if data_thread:
+        start_training_loop()
 
     # Keep main alive until shutdown is triggered
     while not shutdown_event.is_set():
         time.sleep(1)
 
-    logger.info("Main process is shutting down. Waiting for threads to finish.")
-    data_thread.join()  # Ensure the data fetching thread completes before shutdown
+    logger.info("Main process is shutting down.")
+    
+    if data_thread and data_thread.is_alive():
+        logger.info("Waiting for data fetching thread to finish...")
+        data_thread.join()
+
     logger.info("Shutdown complete.")
 
 if __name__ == "__main__":
